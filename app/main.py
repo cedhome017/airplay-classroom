@@ -1,4 +1,4 @@
-"""AirPlay 課堂投影控制面板。
+"""CYT_airplay 課堂投影控制面板。
 
 啟動：  py app\\main.py   或雙擊 run_panel.bat（打包後直接執行 exe）
 """
@@ -7,7 +7,9 @@ from __future__ import annotations
 import os
 import queue
 import random
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -17,9 +19,11 @@ from tkinter import filedialog, messagebox, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import config  # noqa: E402
+import updater  # noqa: E402
 import uxplay_ctl as ux  # noqa: E402
+from version import __version__  # noqa: E402
 
-APP_TITLE = "AirPlay 課堂投影控制面板"
+APP_TITLE = "CYT_airplay 課堂投影控制面板"
 POLL_SEC = 2.0
 FONT = "Microsoft JhengHei UI"
 RESOLUTIONS = [("1920x1080（高畫質）", "1920x1080"), ("1280x720（較順、延遲較低）", "1280x720"),
@@ -31,7 +35,12 @@ PRESETS = {"high": ("1920x1080", "60"), "stable": ("1280x720", "30")}
 class Panel(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(APP_TITLE)
+        self.title(f"{APP_TITLE}  v{__version__}")
+        try:
+            base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+            self.iconbitmap(default=str(base / "icon.ico"))
+        except tk.TclError:
+            pass
         self.minsize(600, 700)
         self.cfg = config.load()
         self.exe: Path | None = ux.find_exe(config.ROOT, self.cfg.get("uxplay_exe"))
@@ -58,6 +67,45 @@ class Panel(tk.Tk):
             RequirementsDialog(self)
         elif self.cfg.get("autostart_uxplay"):
             self._start_with_settings(restart=False)
+        if getattr(sys, "frozen", False):  # 只有打包後的 exe 自動檢查更新
+            self.after(1500, lambda: self._check_update_async(manual=False))
+
+    # ================================================================ 更新
+    def _check_update_async(self, manual: bool) -> None:
+        def worker():
+            try:
+                self.events.put(("update", (updater.check_update(), manual, None)))
+            except Exception as e:  # noqa: BLE001
+                self.events.put(("update", (None, manual, e)))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_result(self, info, manual: bool, err) -> None:
+        if err is not None:
+            self._log(f"檢查更新失敗：{err}")
+            if manual:
+                messagebox.showerror("檢查更新", f"無法連線到 GitHub 檢查更新：\n{err}", parent=self)
+            return
+        if info is None:
+            self._log(f"已是最新版本 v{__version__}")
+            if manual:
+                messagebox.showinfo("檢查更新", f"目前已是最新版本 v{__version__}", parent=self)
+            return
+        self._log(f"發現新版本 v{info.version}")
+        notes = info.notes[:600] + ("…" if len(info.notes) > 600 else "")
+        size = f"（約 {info.zip_size / 1024 / 1024:.0f} MB）" if info.zip_size else ""
+        if not messagebox.askyesno(
+                "發現新版本",
+                f"有新版本 v{info.version} 可以更新（目前 v{__version__}）。\n\n"
+                f"更新內容：\n{notes or '（無說明）'}\n\n"
+                f"要現在下載並更新嗎？{size}\n更新時會關閉投影服務與面板，完成後自動重新開啟。",
+                parent=self):
+            return
+        ok, why = updater.can_self_update()
+        if not ok:
+            if messagebox.askyesno("無法自動更新", f"{why}\n\n要開啟下載頁面手動更新嗎？", parent=self):
+                webbrowser.open(info.page_url)
+            return
+        UpdateDialog(self, info)
 
     def set_exe(self, f: str) -> None:
         self.exe = Path(f)
@@ -181,6 +229,9 @@ class Panel(tk.Tk):
                         command=self._on_toggle_auto).grid(row=2, column=0, columnspan=2, sticky="w", padx=8)
         ttk.Button(ot, text="檢查必要元件", command=lambda: RequirementsDialog(self)) \
             .grid(row=2, column=2, sticky="e", padx=8, pady=(0, 6))
+        ttk.Label(ot, text=f"目前版本：v{__version__}").grid(row=3, column=0, columnspan=2, sticky="w", padx=8)
+        ttk.Button(ot, text="檢查更新", command=lambda: self._check_update_async(manual=True)) \
+            .grid(row=3, column=2, sticky="e", padx=8, pady=(0, 6))
         ot.columnconfigure(1, weight=1)
 
         # ---- 紀錄
@@ -372,6 +423,8 @@ class Panel(tk.Tk):
                     self.busy = False
                 elif kind == "status":
                     self._show_status(data)
+                elif kind == "update":
+                    self._on_update_result(*data)
         except queue.Empty:
             pass
         self._set_buttons()
@@ -530,6 +583,87 @@ class RequirementsDialog(tk.Toplevel):
         if f:
             self.panel.set_exe(f)
             self.refresh()
+
+
+class UpdateDialog(tk.Toplevel):
+    """下載更新檔並顯示進度；完成後交給外部腳本替換檔案，面板自行關閉。"""
+
+    def __init__(self, panel: Panel, info) -> None:
+        super().__init__(panel)
+        self.panel, self.info = panel, info
+        self.title("下載更新")
+        self.resizable(False, False)
+        self.transient(panel)
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.q: queue.Queue = queue.Queue()
+        self._cancelled = False
+
+        f = ttk.Frame(self, padding=16)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text=f"正在下載 v{info.version}…", font=(FONT, 13, "bold")).pack(anchor="w")
+        self.bar = ttk.Progressbar(f, length=420, mode="determinate", maximum=100)
+        self.bar.pack(fill="x", pady=10)
+        self.lbl = ttk.Label(f, text="準備中…")
+        self.lbl.pack(anchor="w")
+        self.btn = ttk.Button(f, text="取消", command=self._cancel)
+        self.btn.pack(anchor="e", pady=(10, 0))
+        self.grab_set()
+
+        self.work = Path(tempfile.gettempdir()) / "CYT_airplay_update"
+        threading.Thread(target=self._worker, daemon=True).start()
+        self.after(100, self._poll)
+
+    def _worker(self) -> None:
+        try:
+            shutil.rmtree(self.work, ignore_errors=True)
+            zp = updater.download(self.info, self.work,
+                                  progress=lambda d, t: self.q.put(("progress", (d, t))),
+                                  cancelled=lambda: self._cancelled)
+            self.q.put(("msg", "解壓縮中…"))
+            src = updater.extract(zp, self.work / "new")
+            self.q.put(("msg", "關閉投影服務…"))
+            ux.stop()
+            self.q.put(("ready", src))
+        except InterruptedError:
+            self.q.put(("cancelled", None))
+        except Exception as e:  # noqa: BLE001
+            self.q.put(("error", e))
+
+    def _poll(self) -> None:
+        try:
+            while True:
+                kind, data = self.q.get_nowait()
+                if kind == "progress":
+                    d, t = data
+                    if t:
+                        self.bar["value"] = d * 100 / t
+                    self.lbl.configure(text=f"{d / 1048576:.1f} / {t / 1048576:.1f} MB" if t
+                                       else f"{d / 1048576:.1f} MB")
+                elif kind == "msg":
+                    self.btn.state(["disabled"])
+                    self.lbl.configure(text=data)
+                elif kind == "ready":
+                    self.lbl.configure(text="即將重新開啟…")
+                    updater.launch_replacer(data, updater.install_dir(), self.work, updater.pids_to_wait())
+                    self.panel.destroy()
+                    return
+                elif kind == "cancelled":
+                    shutil.rmtree(self.work, ignore_errors=True)
+                    self.destroy()
+                    return
+                elif kind == "error":
+                    messagebox.showerror("更新失敗", f"{data}\n\n可稍後再試，或到 GitHub 手動下載。", parent=self)
+                    self.panel._log(f"更新失敗：{data}")
+                    self.destroy()
+                    return
+        except queue.Empty:
+            pass
+        self.after(100, self._poll)
+
+    def _cancel(self) -> None:
+        if self.btn.instate(["!disabled"]):
+            self._cancelled = True
+            self.lbl.configure(text="取消中…")
 
 
 def main() -> None:
