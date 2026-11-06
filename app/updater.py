@@ -148,7 +148,23 @@ Start-Process -FilePath (Join-Path $dst '{EXE_NAME}') -WorkingDirectory $dst
 """, encoding="utf-8-sig")  # PowerShell 5.1 需要 BOM 才會以 UTF-8 讀中文
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                      "-File", str(script)], creationflags=flags, close_fds=True)
+                      "-File", str(script)], creationflags=flags, close_fds=True, env=clean_env())
+
+
+def clean_env() -> dict[str, str]:
+    """給「全新啟動」的子程序用的環境變數。
+
+    PyInstaller onefile 會設定 _PYI_*／_MEIPASS2 等變數指向本程序的暫存解壓資料夾；
+    若被新版 exe 繼承，新版會去找已刪除的資料夾而出現「Failed to load Python DLL」。
+    """
+    env = {k: v for k, v in os.environ.items()
+           if not k.upper().startswith(("_PYI_", "_MEIPASS")) and k.upper() not in ("TCL_LIBRARY", "TK_LIBRARY")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:  # 從 PATH 移除暫存資料夾
+        env["PATH"] = os.pathsep.join(p for p in env.get("PATH", "").split(os.pathsep)
+                                      if not p.startswith(meipass))
+    return env
 
 
 def pids_to_wait() -> list[int]:

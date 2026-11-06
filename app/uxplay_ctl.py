@@ -216,7 +216,8 @@ def is_running() -> bool:
 def start(exe: Path) -> None:
     if is_running():
         return
-    subprocess.Popen([str(exe)], cwd=str(exe.parent), close_fds=True,
+    from updater import clean_env  # 避免把 PyInstaller 暫存路徑傳給 uxplay-windows
+    subprocess.Popen([str(exe)], cwd=str(exe.parent), close_fds=True, env=clean_env(),
                      creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
                      | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
 
