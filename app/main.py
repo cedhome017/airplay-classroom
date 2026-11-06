@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -49,8 +50,21 @@ class Panel(tk.Tk):
 
         threading.Thread(target=self._poll_loop, daemon=True).start()
         self.after(200, self._drain_events)
-        if self.cfg.get("autostart_uxplay") and self.exe:
-            self.after(500, lambda: self._start_with_settings(restart=False))
+        self.after(300, self._startup_check)
+
+    def _startup_check(self) -> None:
+        missing = RequirementsDialog.problems(self)
+        if missing:
+            RequirementsDialog(self)
+        elif self.cfg.get("autostart_uxplay"):
+            self._start_with_settings(restart=False)
+
+    def set_exe(self, f: str) -> None:
+        self.exe = Path(f)
+        self.cfg["uxplay_exe"] = f
+        config.save(self.cfg)
+        self.lbl_exe.configure(text=f)
+        self._log(f"已設定程式位置：{f}")
 
     # ================================================================ 介面
     def _build_ui(self) -> None:
@@ -164,7 +178,9 @@ class Panel(tk.Tk):
         ttk.Button(ot, text="變更…", command=self._on_pick_exe).grid(row=1, column=2, sticky="e", padx=8)
         self.var_auto = tk.BooleanVar(value=bool(self.cfg.get("autostart_uxplay")))
         ttk.Checkbutton(ot, text="開啟面板時自動啟動投影服務", variable=self.var_auto,
-                        command=self._on_toggle_auto).grid(row=2, column=0, columnspan=3, sticky="w", padx=8)
+                        command=self._on_toggle_auto).grid(row=2, column=0, columnspan=2, sticky="w", padx=8)
+        ttk.Button(ot, text="檢查必要元件", command=lambda: RequirementsDialog(self)) \
+            .grid(row=2, column=2, sticky="e", padx=8, pady=(0, 6))
         ot.columnconfigure(1, weight=1)
 
         # ---- 紀錄
@@ -279,11 +295,7 @@ class Panel(tk.Tk):
         f = filedialog.askopenfilename(title="選擇 uxplay-windows.exe",
                                        filetypes=[("uxplay-windows", "uxplay-windows.exe")], parent=self)
         if f:
-            self.exe = Path(f)
-            self.cfg["uxplay_exe"] = f
-            config.save(self.cfg)
-            self.lbl_exe.configure(text=f)
-            self._log(f"已設定程式位置：{f}")
+            self.set_exe(f)
 
     def _pick_recdir(self) -> None:
         d = filedialog.askdirectory(title="選擇錄影存放資料夾", parent=self)
@@ -403,6 +415,121 @@ class Panel(tk.Tk):
         self.btn_start.state(dis if self.busy or self._running else ["!disabled"])
         self.btn_stop.state(dis if self.busy or not self._running else ["!disabled"])
         self.btn_restart.state(dis if self.busy or not self._running else ["!disabled"])
+
+
+class RequirementsDialog(tk.Toplevel):
+    """檢查 uxplay-windows 與 Bonjour；缺少時提供可點擊的下載連結。"""
+
+    _open: "RequirementsDialog | None" = None
+
+    @staticmethod
+    def problems(panel: Panel) -> list[str]:
+        out = []
+        if not (panel.exe and panel.exe.is_file()):
+            panel.exe = ux.find_exe(config.ROOT, panel.cfg.get("uxplay_exe"))
+            if not panel.exe:
+                out.append("uxplay")
+        if ux.bonjour_state() != "running":
+            out.append("bonjour")
+        return out
+
+    def __init__(self, panel: Panel) -> None:
+        prev = RequirementsDialog._open
+        if prev is not None:
+            try:
+                if prev.winfo_exists():
+                    prev.lift()
+                    return
+            except tk.TclError:
+                pass
+        super().__init__(panel)
+        RequirementsDialog._open = self
+        self.panel = panel
+        self.title("檢查必要元件")
+        self.resizable(False, False)
+        self.transient(panel)
+        self.body = ttk.Frame(self, padding=16)
+        self.body.pack(fill="both", expand=True)
+        self.refresh()
+        self.grab_set()
+
+    # ---- 小工具
+    def _text(self, parent, text, **kw):
+        lbl = ttk.Label(parent, text=text, justify="left", wraplength=520, **kw)
+        lbl.pack(anchor="w", pady=1)
+        return lbl
+
+    def _link(self, parent, text, url):
+        lbl = tk.Label(parent, text=text, fg="#1565c0", cursor="hand2",
+                       font=(FONT, 11, "underline"))
+        lbl.pack(anchor="w", pady=(2, 4))
+        lbl.bind("<Button-1>", lambda _e: webbrowser.open(url))
+        return lbl
+
+    def _section(self, title: str, ok: bool) -> ttk.Frame:
+        box = ttk.LabelFrame(self.body, text=f"{'✅' if ok else '❌'} {title}", padding=10)
+        box.pack(fill="x", pady=6)
+        return box
+
+    # ---- 內容
+    def refresh(self) -> None:
+        for w in self.body.winfo_children():
+            w.destroy()
+        problems = self.problems(self.panel)
+        ttk.Label(self.body, text="必要元件都已就緒！" if not problems else "缺少執行投影所需的元件",
+                  font=(FONT, 15, "bold")).pack(anchor="w", pady=(0, 6))
+
+        # uxplay-windows
+        box = self._section("uxplay-windows（AirPlay 接收程式）", "uxplay" not in problems)
+        if "uxplay" in problems:
+            target = config.ROOT / "vendor" / "uxplay-windows"
+            self._text(box, "1. 點下方連結，下載 x64 版本並解壓縮（或安裝）。")
+            self._link(box, "▶ 前往下載 uxplay-windows", ux.UXPLAY_DOWNLOAD_URL)
+            self._text(box, f"2. 把解壓縮後的整個資料夾放到：\n    {target}")
+            self._text(box, "3. 按下方「重新檢查」；若放在其他位置，請按「手動選擇位置…」。")
+            row = ttk.Frame(box)
+            row.pack(anchor="w", pady=(4, 0))
+            ttk.Button(row, text="開啟放置資料夾", command=lambda: self._open_dir(target.parent)) \
+                .pack(side="left", padx=(0, 6))
+            ttk.Button(row, text="手動選擇位置…", command=self._pick_exe).pack(side="left")
+        else:
+            self._text(box, str(self.panel.exe), foreground="#555")
+
+        # Bonjour
+        state = ux.bonjour_state()
+        box = self._section("Bonjour 服務（讓 iPad 找到這台電腦）", state == "running")
+        if state == "missing":
+            self._text(box, "1. 點下方連結，到 Apple 官網下載「Bonjour Print Services for Windows」。")
+            self._link(box, "▶ 前往 Apple 官網下載 Bonjour", ux.BONJOUR_DOWNLOAD_URL)
+            self._text(box, "2. 執行 BonjourPSSetup.exe 安裝（需要管理員權限）。\n3. 安裝完成後按「重新檢查」。")
+        elif state == "stopped":
+            self._text(box, "Bonjour 已安裝，但服務沒有執行。請重新開機，或在「服務」中找到「Bonjour 服務」並按「啟動」。")
+            ttk.Button(box, text="開啟服務管理員", command=lambda: os.startfile("services.msc")) \
+                .pack(anchor="w", pady=(4, 0))
+        else:
+            self._text(box, "執行中", foreground="#555")
+
+        btns = ttk.Frame(self.body)
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="關閉", command=self.destroy).pack(side="right")
+        ttk.Button(btns, text="重新檢查", command=self.refresh).pack(side="right", padx=6)
+        if not problems:
+            self.panel._log("必要元件檢查：全部就緒")
+
+    def destroy(self) -> None:
+        RequirementsDialog._open = None
+        super().destroy()
+
+    def _open_dir(self, d: Path) -> None:
+        d.mkdir(parents=True, exist_ok=True)
+        os.startfile(d)  # noqa: S606
+
+    def _pick_exe(self) -> None:
+        f = filedialog.askopenfilename(title="選擇 uxplay-windows.exe",
+                                       filetypes=[("uxplay-windows", "uxplay-windows.exe")], parent=self)
+        if f:
+            self.panel.set_exe(f)
+            self.refresh()
 
 
 def main() -> None:

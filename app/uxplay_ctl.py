@@ -52,6 +52,25 @@ def find_exe(project_root: Path, configured: str | None = None) -> Path | None:
     return None
 
 
+# ------------------------------------------------------------------ 必要元件
+UXPLAY_DOWNLOAD_URL = "https://github.com/leapbtw/uxplay-windows/releases/latest"
+BONJOUR_DOWNLOAD_URL = "https://support.apple.com/en-us/106380"  # Apple 官方 Bonjour Print Services 頁面
+BONJOUR_SERVICE = "Bonjour Service"
+
+
+def bonjour_state() -> str:
+    """回傳 'running'、'stopped' 或 'missing'。"""
+    try:
+        out = _run(["sc", "query", BONJOUR_SERVICE])
+    except OSError:
+        return "missing"
+    if "RUNNING" in out:
+        return "running"
+    if "STATE" in out:
+        return "stopped"
+    return "missing"
+
+
 # ------------------------------------------------------------------ 參數
 FULLSCREEN_SINK = "d3d11videosink"  # UxPlay 的 -fs 在 Windows 需搭配 D3D11/12 videosink
 

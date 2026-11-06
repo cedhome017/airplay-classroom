@@ -24,7 +24,19 @@
 - 電腦與 iPad 在**同一個網路**，且 Windows 網路類型設為「私人」
 - 第一次啟動時，Windows 防火牆詢問請勾選「私人網路」並允許
 
-## 安裝（使用打包好的 exe）
+## 安裝
+
+### 方法一：使用 zip 整合包（建議）
+
+1. 下載 `AirPlayClassroom_日期.zip`（已內含 uxplay-windows）。
+2. 解壓縮到任意位置，例如 `D:\AirPlayClassroom\`。
+3. 執行資料夾中的 `AirPlayClassroom.exe`。
+
+若電腦缺少 uxplay-windows 或 Bonjour，面板啟動時會自動跳出「檢查必要元件」視窗，
+列出缺少的項目，並附上可直接點擊的官方下載連結與安裝步驟。
+之後也可隨時在面板「進階 → 檢查必要元件」重新檢查。
+
+### 方法二：只有 exe 時
 
 1. 準備一個資料夾，例如 `D:\AirPlayClassroom\`，放入 `AirPlayClassroom.exe`。
 2. 下載 [uxplay-windows 2.0.0.1736](https://github.com/leapbtw/uxplay-windows/releases/latest)，解壓縮後放到 `vendor\uxplay-windows\`：
@@ -65,7 +77,8 @@
 
 | 狀況 | 處理方式 |
 |---|---|
-| iPad 找不到電腦 | 確認同一網路、網路類型為「私人」、Bonjour 服務執行中；執行 `check_env.bat` 檢查 |
+| iPad 找不到電腦 | 確認同一網路、網路類型為「私人」；在面板按「進階 → 檢查必要元件」確認 Bonjour 執行中 |
+| Windows 顯示「已保護您的電腦」 | exe 沒有數位簽章，按「其他資訊 → 仍要執行」 |
 | 名稱改了沒生效 | 確認有按「套用設定並重新啟動」；若 `C:\ProgramData\uxplay-windows\arguments.txt` 存在，它會蓋過面板設定，請刪除 |
 | 停止後 iPad 連不回來 | iOS 不會自動重連，請在 iPad 上重新選取 |
 | 錄影沒有產生檔案 | 檔案在 iPad 開始投影後才會建立；確認路徑沒有空白或中文 |
@@ -83,11 +96,13 @@ check_env.bat
 :: 直接執行面板
 run_panel.bat
 
-:: 打包成 exe（需 pip install pyinstaller）
-py -3 -m PyInstaller --noconfirm AirPlayClassroom.spec
+:: 打包發行版（需 pip install pyinstaller，且 vendor\uxplay-windows\ 已放好）
+py -3 tools\build_release.py
 ```
 
-打包結果在 `dist\`，再依「安裝」一節放入 `vendor\uxplay-windows\`。
+產出：
+- `dist\AirPlayClassroom\`：可直接執行的資料夾（exe＋vendor＋使用說明）
+- `dist\AirPlayClassroom_日期.zip`：上傳雲端硬碟用的整合包
 
 ### 專案結構
 
@@ -99,6 +114,7 @@ app/
   icon.ico         程式圖示（取自 uxplay-windows）
 tools/
   check_env.py     環境自動檢查
+  build_release.py 打包 exe 並產生 zip 整合包
 vendor/            放 uxplay-windows（不納入版本控制）
 AirPlayClassroom.spec  PyInstaller 設定
 ```
