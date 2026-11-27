@@ -41,7 +41,7 @@ class Panel(tk.Tk):
             self.iconbitmap(default=str(base / "icon.ico"))
         except tk.TclError:
             pass
-        self.minsize(600, 700)
+        self.minsize(560, 480)
         self.cfg = config.load()
         self.exe: Path | None = ux.find_exe(config.ROOT, self.cfg.get("uxplay_exe"))
         self.events: queue.Queue = queue.Queue()
@@ -150,12 +150,15 @@ class Panel(tk.Tk):
         for i, b in enumerate((self.btn_start, self.btn_stop, self.btn_restart)):
             b.grid(row=0, column=i, sticky="ew", padx=4)
             ctl.columnconfigure(i, weight=1)
-        ttk.Label(self, text="※ 下方設定變更後，需按「套用設定並重新啟動」才生效（iPad 會斷線，需重新點選）",
+        ttk.Label(self, text="※ 分頁中的設定變更後，需按「套用設定並重新啟動」才生效（iPad 會斷線，需重新點選）",
                   foreground="#666").pack(anchor="w", padx=14)
 
-        # ---- 基本設定
-        fm = ttk.LabelFrame(self, text="投影設定")
-        fm.pack(fill="x", **pad)
+        # ---- 設定分頁
+        style.configure("TNotebook.Tab", font=(FONT, 11), padding=(14, 4))
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="x", **pad)
+        fm = ttk.Frame(self.nb, padding=6)
+        self.nb.add(fm, text="投影設定")
         r = 0
         ttk.Label(fm, text="iPad 上顯示的名稱").grid(row=r, column=0, sticky="w", padx=8, pady=3)
         self.var_name = tk.StringVar()
@@ -185,8 +188,8 @@ class Panel(tk.Tk):
         fm.columnconfigure(1, weight=1)
 
         # ---- 課堂功能
-        cl = ttk.LabelFrame(self, text="課堂功能")
-        cl.pack(fill="x", **pad)
+        cl = ttk.Frame(self.nb, padding=6)
+        self.nb.add(cl, text="課堂功能")
         self.var_fs = tk.BooleanVar()
         ttk.Checkbutton(cl, text="全螢幕顯示投影畫面", variable=self.var_fs) \
             .grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=2)
@@ -215,8 +218,8 @@ class Panel(tk.Tk):
         cl.columnconfigure(2, weight=1)
 
         # ---- 其他
-        ot = ttk.LabelFrame(self, text="進階")
-        ot.pack(fill="x", **pad)
+        ot = ttk.Frame(self.nb, padding=6)
+        self.nb.add(ot, text="進階")
         ttk.Label(ot, text="其他 UxPlay 參數").grid(row=0, column=0, sticky="w", padx=8, pady=3)
         self.var_extra = tk.StringVar()
         ttk.Entry(ot, textvariable=self.var_extra).grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
@@ -238,7 +241,21 @@ class Panel(tk.Tk):
         lg = ttk.LabelFrame(self, text="紀錄")
         lg.pack(fill="both", expand=True, **pad)
         self.txt = tk.Text(lg, height=6, state="disabled", font=("Consolas", 10), wrap="word")
-        self.txt.pack(fill="both", expand=True, padx=6, pady=6)
+        sb = ttk.Scrollbar(lg, orient="vertical", command=self.txt.yview)
+        self.txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y", pady=6)
+        self.txt.pack(fill="both", expand=True, padx=(6, 0), pady=6)
+
+        # 記住上次停留的分頁
+        try:
+            self.nb.select(int(self.cfg.get("tab", 0)))
+        except (tk.TclError, ValueError):
+            pass
+        self.nb.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    def _on_tab_changed(self, _e=None) -> None:
+        self.cfg["tab"] = self.nb.index(self.nb.select())
+        config.save(self.cfg)
 
     def _log(self, msg: str) -> None:
         self.txt.configure(state="normal")
